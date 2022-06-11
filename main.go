@@ -3,48 +3,70 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
-	"github.com/dgraph-io/badger"
+	"github.com/dgraph-io/badger/v3"
 	"github.com/spf13/viper"
-
-	abci "github.com/tendermint/tendermint/abci/types"
+	abciclient "github.com/tendermint/tendermint/abci/client"
 	cfg "github.com/tendermint/tendermint/config"
-	"github.com/tendermint/tendermint/internal/p2p"
-	tmflags "github.com/tendermint/tendermint/libs/cli/flags"
-	"github.com/tendermint/tendermint/libs/log"
-	"github.com/tendermint/tendermint/libs/service"
-	"github.com/tendermint/tendermint/node"
-	"github.com/tendermint/tendermint/privval"
-	"github.com/tendermint/tendermint/proxy"
+	tmlog "github.com/tendermint/tendermint/libs/log"
+	nm "github.com/tendermint/tendermint/node"
+	"github.com/tendermint/tendermint/types"
 )
 
-var configFile string
+var homeDir string
 
 func init() {
-	flag.StringVar(&configFile, "config", "$HOME/.tendermint/config/config.toml", "Path to cofig.toml")
+	flag.StringVar(&homeDir, "tm-home", "", "Path to the tendermint config directory (if empty, uses $HOME/.tendermint)")
 }
 
 func main() {
-	db, err := badger.Open(badger.DefaultOptions("/tmp/badger"))
-	if err != nil {
-		fmt.Println(os.Stderr, "failed to open badger db: %v", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	app := NewKVStoreApplication(db)
-
 	flag.Parse()
-
-	node, err := newTendermint(app, configFile)
-	if err != nil {
-		fmt.Println(os.Stderr, "%v", err)
-		os.Exit(2)
+	if homeDir == "" {
+		homeDir = os.ExpandEnv("$HOME/.tendermint")
 	}
+	config := cfg.DefaultValidatorConfig()
+
+	config.SetRoot(homeDir)
+
+	viper.SetConfigFile(fmt.Sprintf("%s/%s", homeDir, "config/config.toml"))
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("Reading config: %v", err)
+	}
+	if err := viper.Unmarshal(config); err != nil {
+		log.Fatalf("Decoding config: %v", err)
+	}
+	if err := config.ValidateBasic(); err != nil {
+		log.Fatalf("Invalid configuration data: %v", err)
+	}
+	gf, err := types.GenesisDocFromFile(config.GenesisFile())
+	if err != nil {
+		log.Fatalf("Loading genesis document: %v", err)
+	}
+
+	dbPath := filepath.Join(homeDir, "badger")
+	db, err := badger.Open(badger.DefaultOptions(dbPath))
+	if err != nil {
+		log.Fatalf("Opening database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Fatalf("Closing database: %v", err)
+		}
+	}()
+	app := NewKVStoreApplication(db)
+	acc := abciclient.NewLocalCreator(app)
+
+	logger := tmlog.MustNewDefaultLogger(tmlog.LogFormatPlain, tmlog.LogLevelInfo, false)
+	node, err := nm.New(config, logger, acc, gf)
+	if err != nil {
+		log.Fatalf("Creating node: %v", err)
+	}
+
 	node.Start()
 	defer func() {
 		node.Stop()
@@ -54,56 +76,4 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
-}
-
-func newTendermint(app abci.Application, configFile string) (*service.Service, error) {
-	// read config
-	config := cfg.DefaultValidatorConfig()
-	config.RootDir = filepath.Dir(filepath.Dir(configFile))
-	viper.SetConfigFile(configFile)
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("viper failed to read config file: %w", err)
-	}
-	if err := viper.Unmarshal(config); err != nil {
-		return nil, fmt.Errorf("viper failed to unmarshal config: %w", err)
-	}
-	if err := config.ValidateBasic(); err != nil {
-		return nil, fmt.Errorf("config is invalid: %w", err)
-	}
-
-	// create logger
-	logger := log.NewTMLogger(log.NewSyncWriter(os.Stdout))
-	var err error
-	logger, err = tmflags.ParseLogLevel(config.LogLevel, logger, cfg.DefaultLogLevel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse log level: %w", err)
-	}
-
-	// read private validator
-	pv := privval.LoadFilePV(
-		config.PrivValidatorKeyFile(),
-		config.PrivValidatorStateFile(),
-	)
-
-	// read node key
-	nodeKey, err := p2p.LoadNodeKey(config.NodeKeyFile())
-	if err != nil {
-		return nil, fmt.Errorf("failed to load node's key: %w", err)
-	}
-
-	// create node
-	node, err := node.New(
-		config,
-		pv,
-		nodeKey,
-		abcicli.NewLocalClientCreator(app),
-		nm.DefaultGenesisDocProviderFunc(config),
-		nm.DefaultDBProvider,
-		nm.DefaultMetricsProvider(config.Instrumentation),
-		logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new Tendermint node: %w", err)
-	}
-
-	return node, nil
 }
