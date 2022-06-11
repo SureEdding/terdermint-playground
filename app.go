@@ -6,6 +6,7 @@ import (
 
 	"github.com/dgraph-io/badger/v3"
 	abcitypes "github.com/tendermint/tendermint/abci/types"
+	"github.com/tendermint/tendermint/libs/time"
 )
 
 type KVStoreApplication struct {
@@ -24,6 +25,7 @@ func (app *KVStoreApplication) Info(req abcitypes.RequestInfo) abcitypes.Respons
 }
 
 func (app *KVStoreApplication) DeliverTx(req abcitypes.RequestDeliverTx) abcitypes.ResponseDeliverTx {
+	log.Println("DeliverTx-------------------GOGOGO", time.Now(), "req=", req)
 	if code := app.validateTx(req.Tx); code != 0 {
 		return abcitypes.ResponseDeliverTx{Code: code}
 	}
@@ -50,11 +52,13 @@ func (app *KVStoreApplication) validateTx(tx []byte) uint32 {
 }
 
 func (app *KVStoreApplication) CheckTx(req abcitypes.RequestCheckTx) abcitypes.ResponseCheckTx {
+	log.Println("CheckTx-------------------GOGOGO", time.Now(), "req=", req)
 	code := app.validateTx(req.Tx)
 	return abcitypes.ResponseCheckTx{Code: code}
 }
 
 func (app *KVStoreApplication) Commit() abcitypes.ResponseCommit {
+	log.Println("Commit-------------------GOGOGO", time.Now())
 	if err := app.pendingBlock.Commit(); err != nil {
 		log.Panicf("Error writing to database, unable to commit block: %v", err)
 	}
@@ -62,6 +66,7 @@ func (app *KVStoreApplication) Commit() abcitypes.ResponseCommit {
 }
 
 func (app *KVStoreApplication) Query(req abcitypes.RequestQuery) abcitypes.ResponseQuery {
+	log.Println("Query-------------------GOGOGO", time.Now(), "req=", req)
 	resp := abcitypes.ResponseQuery{Key: req.Data}
 
 	dbErr := app.db.View(func(txn *badger.Txn) error {
@@ -92,11 +97,13 @@ func (app *KVStoreApplication) InitChain(req abcitypes.RequestInitChain) abcityp
 }
 
 func (app *KVStoreApplication) BeginBlock(req abcitypes.RequestBeginBlock) abcitypes.ResponseBeginBlock {
+	log.Println("BeginBlock-------------------GOGOGO", time.Now())
 	app.pendingBlock = app.db.NewTransaction(true)
 	return abcitypes.ResponseBeginBlock{}
 }
 
 func (app *KVStoreApplication) EndBlock(req abcitypes.RequestEndBlock) abcitypes.ResponseEndBlock {
+	log.Println("EndBlock-------------------GOGOGO", time.Now())
 	return abcitypes.ResponseEndBlock{}
 }
 
